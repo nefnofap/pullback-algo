@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# allow committed reference results, ignore ad-hoc ones
+backtest/scratch_*.csv
