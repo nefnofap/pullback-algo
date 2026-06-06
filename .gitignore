@@ -6,3 +6,8 @@ __pycache__/
 
 # allow committed reference results, ignore ad-hoc ones
 backtest/scratch_*.csv
+
+# Signal-service runtime artifacts
+signals/state.sqlite
+signals/state.sqlite-journal
+signals/log.jsonl

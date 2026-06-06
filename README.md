@@ -17,6 +17,7 @@ backtest tooling:
 | `pine/weekly_manipulation_strategy.pine`   | TradingView Pine v6 strategy + visuals        |
 | `backtest/strategy.py` + `run.py`          | Python port + multi-ticker backtest CLI       |
 | `backtest/walk_forward.py`                 | Walk-forward parameter optimizer              |
+| **`signals/service.py`**                   | **24/7 multi-instrument live signal service** |
 | [`research/improvements.md`](research/improvements.md) | Deep-research note: failure-mode analysis + ranked improvements |
 
 ---
@@ -305,6 +306,144 @@ Searches `zone_pct ∈ {0.10, 0.15, 0.20}`, `rr_tp2 ∈ {1.5, 2.0, 3.0}`,
 applies the best to each OOS window. Reports per-window detail and
 per-ticker aggregates. Pass `--preset {baseline,v2,v2_loose}` to choose
 the base param set the grid is searched on top of.
+
+---
+
+## 24/7 live signal service
+
+A standalone Python service that polls yfinance on a schedule, runs the
+strategy across the configured basket, and fires webhooks for any fresh
+signal. No TradingView or browser required — runs anywhere Python runs.
+
+### Quickstart
+
+```bash
+# Console-only smoke test (3 tickers, single cycle)
+python -m signals.service --once --tickers ES=F GC=F BTC-USD
+
+# Full curated basket, polling every 5 minutes, console + JSON-log output
+python -m signals.service
+
+# With Discord webhook (free; create one in Server Settings -> Integrations)
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... \
+    python -m signals.service
+
+# Telegram bot
+TELEGRAM_BOT_TOKEN=123:abc \
+TELEGRAM_CHAT_ID=-100123456789 \
+    python -m signals.service
+```
+
+The service exits cleanly on Ctrl-C / SIGTERM. SQLite-backed dedupe means
+the same setup never fires twice; restart-safe.
+
+### What you get
+
+For each fresh signal:
+
+```
+[2026-06-06T19:45:03+00:00] BUY ES=F @ 7559.50000
+  bar_time : 2026-06-04T13:00:00
+  SL       : 7530.41429   (29.08571)
+  TP1      : 7627.00000   (2.32R)
+  TP2      : 7617.67143   (2.00R)
+  trigger  : cascade
+```
+
+JSON-Lines log at `signals/log.jsonl` records every signal for replay /
+analysis. Discord embeds get colour-coded green/red. Telegram gets the
+plain-text format.
+
+### Configuration
+
+| Flag             | Default            | Purpose                                                        |
+| ---------------- | ------------------ | -------------------------------------------------------------- |
+| `--basket`       | `curated`          | `curated`, `default`, or `wide`                                |
+| `--tickers`      | (use basket)       | Override basket with explicit symbol list                      |
+| `--preset`       | `v2_loose`         | `baseline`, `v2`, or `v2_loose`                                |
+| `--interval`     | `1h`               | Bar timeframe (yfinance: 1h capped at 730d, 15m at 60d)        |
+| `--period`       | `60d`              | Lookback for state-machine warm-up (60d covers 8 weeks of 1h)  |
+| `--poll-sec`     | `300`              | Seconds between polling cycles                                 |
+| `--bar-age`      | `1`                | Trigger bar must be N bars old (1 = use second-to-last)        |
+| `--no-ny`        | off                | Disable NY-session filter (for 24h FX/crypto runs)             |
+| `--once`         | off                | Run a single cycle and exit (great for cron)                   |
+| `--state-db`     | `signals/state.sqlite` | Dedupe DB path                                             |
+| `--log-path`     | `signals/log.jsonl` | JSON-Lines log path                                            |
+
+Environment variables for notifications:
+
+| Var                    | Effect                                          |
+| ---------------------- | ----------------------------------------------- |
+| `DISCORD_WEBHOOK_URL`  | Enables Discord embeds (no Discord auth needed) |
+| `TELEGRAM_BOT_TOKEN`   | Bot token from @BotFather                       |
+| `TELEGRAM_CHAT_ID`     | Numeric chat or channel id                      |
+
+Console + JSON-Lines log are always on. Discord/Telegram are added when the
+relevant env vars are set.
+
+### Deployment
+
+The service is a long-running Python process. Three reasonable approaches:
+
+```bash
+# Local dev with auto-restart
+python -m signals.service
+
+# Background via screen/tmux
+screen -S signals
+python -m signals.service
+# Ctrl-A D to detach
+
+# As a systemd service (Linux)
+# Create /etc/systemd/system/pullback-signals.service:
+[Unit]
+Description=Pullback algo signal service
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/pullback-algo
+Environment="DISCORD_WEBHOOK_URL=https://..."
+ExecStart=/usr/bin/python3 -m signals.service
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+
+# Then:
+systemctl daemon-reload && systemctl enable --now pullback-signals
+```
+
+### Honest caveats
+
+1. **yfinance is delayed**, often 15-30 minutes for free-tier intraday data.
+   This is fine for a 1h strategy where you act on the *previous* bar's
+   signal anyway, but means you won't have tick-precise execution. For
+   that, swap `signals/check.py`'s `fetch()` call for Polygon/Databento.
+2. **The default `--bar-age 1` skips the live bar.** That bar isn't closed
+   yet so signals computed on it would repaint. The service trusts the
+   second-to-last bar (which IS closed). Set `--bar-age 0` only if you
+   know your data source is exact-close-aligned.
+3. **The service is stateless across signal latches** — it re-runs the
+   backtest engine over the recent 60d window every cycle, which
+   reconstructs the weekly fakeout latch from history. This is slower
+   than incremental state but immune to consistency bugs.
+4. **No order routing.** This is a *signal* service, not an *execution*
+   service. Pair it with a broker API (Alpaca, IBKR, Tradovate) if you
+   want auto-execution. The webhook payload has every field a broker
+   adapter would need.
+
+### Files
+
+```
+signals/
+├── service.py     # main polling loop, CLI
+├── check.py       # signal detection (runs the strategy, finds fresh trades)
+├── notify.py      # console / file / Discord / Telegram notifiers
+├── state.py       # SQLite-backed dedupe store
+├── state.sqlite   # (created at runtime)
+└── log.jsonl      # (created at runtime)
+```
 
 ---
 
