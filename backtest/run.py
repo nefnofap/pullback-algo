@@ -27,13 +27,15 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 DEFAULT_TICKERS = [
-    # FX
-    "EURUSD=X", "GBPUSD=X", "AUDUSD=X", "USDJPY=X",
-    # US equity ETFs
-    "SPY", "QQQ",
-    # Index futures (continuous)
-    "ES=F", "NQ=F",
-    # Crypto (24/7 - good stress test)
+    # FX majors
+    "EURUSD=X", "GBPUSD=X", "AUDUSD=X", "USDJPY=X", "USDCAD=X",
+    # Index futures (continuous, ~24h)
+    "ES=F", "NQ=F", "YM=F", "RTY=F",
+    # Index spot
+    "^GSPC", "^NDX", "^DJI", "^FTSE", "^GDAXI", "^N225",
+    # Metals (continuous futures)
+    "GC=F", "SI=F", "HG=F", "PL=F",
+    # Crypto (24/7 stress test)
     "BTC-USD", "ETH-USD",
 ]
 
