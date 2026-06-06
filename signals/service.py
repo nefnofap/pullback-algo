@@ -93,6 +93,55 @@ def tick(tickers: list[str], interval: str, period: str, params,
 
 
 # ---------------------------------------------------------------------------
+def _send_test_signals(tickers: list[str], notifier) -> int:
+    """Fire a fake long signal for every ticker so the user can verify
+    notifier setup. Bypasses dedupe and state writes.
+
+    Approximate prices are inferred from yfinance's most recent close so the
+    test message looks plausible. If fetch fails, fall back to placeholder
+    numbers (1.0000) - the goal is delivery verification, not realism.
+    """
+    fired = 0
+    fired_at = datetime.now(timezone.utc).isoformat()
+    for tkr in tickers:
+        # Try to anchor numbers to a real recent close so the embed looks real
+        entry = 100.0
+        try:
+            from backtest.run import fetch
+            df = fetch(tkr, "1h", "5d")
+            if df is not None and len(df):
+                entry = float(df["Close"].iloc[-1])
+        except Exception:
+            pass
+        risk = entry * 0.005       # 0.5%
+        sig = {
+            "ticker":      tkr,
+            "side":        "long",
+            "bar_time":    fired_at,
+            "fired_at":    fired_at,
+            "entry_price": entry,
+            "sl":          entry - risk,
+            "tp1":         entry + risk * 2.0,
+            "tp2":         entry + risk * 3.0,
+            "size":        1.0,
+            "r_multiple":  2.0,
+            "reason":      "TEST",
+        }
+        try:
+            if notifier.send(sig):
+                fired += 1
+                LOGGER.info("%s: test signal sent", tkr)
+            else:
+                LOGGER.warning("%s: test signal not delivered (notifier returned False)",
+                               tkr)
+        except Exception as exc:
+            LOGGER.exception("%s: test signal exception: %s", tkr, exc)
+    LOGGER.info("test mode complete: %d/%d signals delivered through every "
+                "configured backend", fired, len(tickers))
+    return 0 if fired == len(tickers) else 1
+
+
+# ---------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -119,6 +168,10 @@ def main() -> int:
                          "(1 = use second-to-last bar; safe default for live data lag)")
     ap.add_argument("--once", action="store_true",
                     help="run a single polling cycle and exit (useful for cron)")
+    ap.add_argument("--test", action="store_true",
+                    help="emit one fake test signal per ticker through all configured "
+                         "notifiers, then exit. Verifies Discord/Telegram delivery without "
+                         "waiting for a real setup. Bypasses the dedupe DB.")
     ap.add_argument("--prune-days", type=int, default=30,
                     help="discard dedupe records older than this many days at startup")
     ap.add_argument("--log-level", default="INFO",
@@ -142,6 +195,11 @@ def main() -> int:
             LOGGER.info("pruned %d dedupe records older than %dd", n, args.prune_days)
 
     notifier = from_env(log_path=args.log_path)
+
+    if args.test:
+        LOGGER.info("TEST MODE: firing one fake signal per ticker through all "
+                    "configured notifiers (no dedupe, no state writes)")
+        return _send_test_signals(tickers, notifier)
 
     LOGGER.info(
         "starting service: %d tickers, preset=%s, interval=%s, poll=%ds, bar_age=%d",
