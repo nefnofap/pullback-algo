@@ -51,6 +51,25 @@ WIDE_TICKERS = DEFAULT_TICKERS + [
     "SOL-USD", "XRP-USD", "DOGE-USD",
 ]
 
+# Curated basket: 15 instruments hand-picked from v2_loose --big results.
+# Selected for either high win rate (>= 55%) or strong positive contribution.
+# Excludes chronic losers (AUDUSD, USDJPY, EURUSD, JPY crosses, DOGE/XRP).
+# Heavy on US equity by design (the data justified it).
+CURATED_TICKERS = [
+    # US index futures (3) - core trend channel, deep liquidity
+    "ES=F", "NQ=F", "YM=F",
+    # US cash indices (3) - independent signal sources from futures channel
+    "^GSPC", "^NDX", "^DJI",
+    # Metals (3) - low correlation with equities; all >= 50% win on v2_loose
+    "GC=F", "SI=F", "HG=F",
+    # Energies (3) - all >= 50% win on v2_loose; CL was 60%
+    "CL=F", "NG=F", "RB=F",
+    # FX (1) - GBPUSD was the v2 turnaround star (-7.5% -> +1.6%)
+    "GBPUSD=X",
+    # Crypto (2) - 24/7, decent sample contribution
+    "BTC-USD", "SOL-USD",
+]
+
 # Curated basket with deep history for the 20-year daily run.
 # Picked instruments where yfinance reliably returns 5000+ daily bars.
 LONG_HISTORY_TICKERS = [
@@ -184,6 +203,8 @@ def main() -> int:
                     help="run baseline, v2, AND v2_loose for full comparison")
     ap.add_argument("--big", action="store_true",
                     help="use the wider 32-ticker basket (FX crosses + energies + altcoins)")
+    ap.add_argument("--curated", action="store_true",
+                    help="use the curated 15-ticker basket (positive performers only)")
     ap.add_argument("--out-csv", default=None)
     args = ap.parse_args()
 
@@ -191,6 +212,8 @@ def main() -> int:
     if args.tickers is None:
         if args.daily:
             args.tickers = LONG_HISTORY_TICKERS
+        elif args.curated:
+            args.tickers = CURATED_TICKERS
         elif args.big:
             args.tickers = WIDE_TICKERS
         else:

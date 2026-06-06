@@ -184,7 +184,7 @@ def aggregate(per_ticker: dict[str, list[dict]]) -> pd.DataFrame:
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> int:
-    from backtest.run import fetch  # local import to avoid yfinance at import time
+    from backtest.run import fetch, make_baseline_params, make_v2_params, make_v2_loose_params
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--tickers",     nargs="+", default=DEFAULT_TICKERS)
@@ -198,19 +198,29 @@ def main() -> int:
     ap.add_argument("--metric",      default="total_return_pct",
                     choices=["total_return_pct", "profit_factor", "avg_R"])
     ap.add_argument("--min-trades",  type=int, default=5)
+    ap.add_argument("--preset",      default="v2",
+                    choices=["baseline", "v2", "v2_loose"],
+                    help="base preset; grid search runs on top of this")
     ap.add_argument("--out-csv",     default=None,
                     help="optional CSV path for the per-window detail table")
     ap.add_argument("--summary-csv", default=None,
                     help="optional CSV path for the per-ticker aggregate")
     args = ap.parse_args()
 
-    base = Params(
-        risk_pct=args.risk_pct / 100.0,
-        use_ny=not args.no_ny,
-    )
+    use_ny = not args.no_ny
+    if args.preset == "baseline":
+        base = make_baseline_params(use_ny=use_ny, daily_mode=False)
+    elif args.preset == "v2_loose":
+        base = make_v2_loose_params(use_ny=use_ny, daily_mode=False)
+    else:
+        base = make_v2_params(use_ny=use_ny, daily_mode=False)
+
+    from dataclasses import replace
+    base = replace(base, risk_pct=args.risk_pct / 100.0)
 
     print(f"\nWalk-forward optimization "
-          f"(grid={sum(1 for _ in product(*DEFAULT_GRID.values()))} combos, "
+          f"(preset={args.preset}, "
+          f"grid={sum(1 for _ in product(*DEFAULT_GRID.values()))} combos, "
           f"train={args.train_days}d, test={args.test_days}d, "
           f"step={args.step_days}d, metric={args.metric})")
     print("-" * 86)

@@ -74,16 +74,49 @@ diagnostic that justifies these.
 
 ## Apples-to-apples backtest: v1 vs v2 vs v2_loose
 
-Same 720-day 1h window, same 21-instrument basket, same risk per trade.
+### Curated 15-instrument basket (recommended)
+
+The 15 positive-performers basket from the wide-basket study:
+ES, NQ, YM index futures + ^GSPC, ^NDX, ^DJI cash indices + GC, SI, HG metals
++ CL, NG, RB energies + GBPUSD + BTC, SOL crypto. Use `--curated`.
+
+```
+                      trades   win    return    DD     positive
+baseline (v1)           211   28.9%  -1.48%   -8.62%   3/15
+v2                      119   54.6%  +0.31%   -2.15%   8/15
+v2_loose                266   59.8%  +1.05%   -3.30%   12/15
+```
+
+**v2_loose on the curated basket: 59.8% win rate, +1.05% mean return, only
+-3.30% worst DD, 12 of 15 instruments positive.** That's the cleanest result
+in the whole study.
+
+### Walk-forward OOS validation (curated basket, v2_loose preset)
+
+```
+  15 instruments, 240d train / 120d test / 60d step, 27-combo grid
+  122 OOS windows, 234 OOS trades
+  weighted win rate (OOS)   : 56.4%
+  mean compound (OOS)       : +0.26%
+  IS -> OOS gap (mean)      : +0.61%   <- small = generalises
+```
+
+The +0.61% IS→OOS gap is the key number — heavily-overfit strategies show
+5-10pp drops; we lose 0.6pp. Best OOS performers: BTC (69% win, +5.74% compound),
+GC (72% win, +2.22%), NG (63% win, +1.52%), HG (67% win, +1.07%),
+NQ (69% win), ES (59% win). The one OOS underperformer is GBPUSD (29% win,
+-2.64%) — even with v2_loose the FX inclusion drags. Consider replacing it.
+
+### Default 21-instrument basket (broader but lower quality)
+
+Same 720-day 1h window, all 21 instruments including the chronic losers:
 
 ```
                       trades   win    return    DD     positive
 baseline (v1)           250   29.6%  -0.99%   -8.62%   6/21
 v2                      156   47.4%  -0.20%   -3.96%   7/21
 v2_loose                359   51.3%  -0.56%   -6.22%   9/21
-```
-
-### v2_loose vs v2 — the sample-size answer
+```### v2_loose vs v2 — the sample-size answer
 
 - **Trades: +130%** (156 → 359)
 - **Win rate: +3.9 pp** (47.4% → 51.3%) — the new triggers are *higher* quality
@@ -244,6 +277,9 @@ python -m backtest.run --loose
 # Three-way comparison: baseline + v2 + v2_loose with delta tables
 python -m backtest.run --three-way
 
+# Curated 15-instrument basket (v2_loose's positive performers)
+python -m backtest.run --curated --three-way
+
 # Wide 32-instrument basket (FX crosses, energies, altcoins)
 python -m backtest.run --loose --big
 
@@ -261,13 +297,14 @@ python -m backtest.run --three-way --risk-pct 0.25 --out-csv results.csv
 
 ```bash
 python -m backtest.walk_forward
-python -m backtest.walk_forward --train-days 180 --test-days 60 --step-days 30
+python -m backtest.walk_forward --preset v2_loose --train-days 240 --test-days 120 --step-days 60
 ```
 
 Searches `zone_pct ∈ {0.10, 0.15, 0.20}`, `rr_tp2 ∈ {1.5, 2.0, 3.0}`,
 `climax_mx ∈ {1.5, 1.75, 2.0}` (27 combos) on rolling training windows,
 applies the best to each OOS window. Reports per-window detail and
-per-ticker aggregates.
+per-ticker aggregates. Pass `--preset {baseline,v2,v2_loose}` to choose
+the base param set the grid is searched on top of.
 
 ---
 
