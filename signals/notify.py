@@ -103,13 +103,26 @@ class DiscordNotifier:
             req = urllib.request.Request(
                 self.webhook_url,
                 data=json.dumps(body).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    # Cloudflare (which fronts discord.com) returns error 1010
+                    # for the default Python urllib User-Agent. Identify as a
+                    # normal HTTP client so the request gets through.
+                    "User-Agent": "pullback-algo/1.0 (+https://github.com/nefnofap/pullback-algo)",
+                },
             )
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 if resp.status >= 300:
                     logger.warning("discord webhook %s: %s", resp.status, resp.reason)
                     return False
                 return True
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                body_text = ""
+            logger.warning("discord webhook HTTP %s: %s", exc.code, body_text)
+            return False
         except (urllib.error.URLError, OSError) as exc:
             logger.warning("discord webhook failed: %s", exc)
             return False
@@ -131,10 +144,22 @@ class TelegramNotifier:
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         body = json.dumps({"chat_id": self.chat_id, "text": text}).encode("utf-8")
         try:
-            req = urllib.request.Request(url, data=body,
-                                         headers={"Content-Type": "application/json"})
+            req = urllib.request.Request(
+                url, data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "pullback-algo/1.0",
+                },
+            )
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 return resp.status < 300
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                body_text = ""
+            logger.warning("telegram api HTTP %s: %s", exc.code, body_text)
+            return False
         except (urllib.error.URLError, OSError) as exc:
             logger.warning("telegram api failed: %s", exc)
             return False
