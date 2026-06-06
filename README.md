@@ -15,6 +15,7 @@ The repo ships two implementations:
 | `pine/weekly_manipulation_strategy.pine`   | TradingView Pine v6 strategy + visuals        |
 | `backtest/strategy.py` + `run.py`          | Python port + multi-ticker backtest CLI       |
 | `backtest/walk_forward.py`                 | Walk-forward parameter optimizer              |
+| [`research/improvements.md`](research/improvements.md) | Deep-research note: ranked, evidence-based proposals to lift sample size and win rate |
 
 ---
 
