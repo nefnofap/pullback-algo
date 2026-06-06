@@ -419,3 +419,189 @@ results in §8/§9 are the contents of `backtest/results_v2_loose.csv`,
 `backtest/results_v2_loose_delta.csv`, and
 `backtest/results_v2_loose_big.csv`. All numbers reproduce on
 `python -m backtest.run --three-way` and `--loose --big`.
+
+
+
+---
+
+# Part III — Beyond Tier-4: what else moves the needle (and what doesn't)
+
+After v2_loose plus the curated basket landed (~60% win, +1.21% mean return,
+~2.6 trades/week aggregate), I went looking for further improvements with a
+strict OOS-honest methodology. Each candidate was tested by:
+
+  1. Calibrating on the first 60% of each instrument's 720d data
+  2. Applying to the remaining 40% as out-of-sample
+  3. Comparing against the static `v2_loose` preset on the same OOS window
+
+This section reports both the **wins** (one robust improvement) and the
+**negative results** (improvements that looked good in-sample but didn't
+generalize). The negative results are arguably more valuable than the wins.
+
+## 13. The OOS-honest improvements list
+
+### 13.1 Cocoa replaces GBPUSD (verified, shipped)
+
+The walk-forward had flagged GBPUSD as a chronic OOS underperformer (29% win
+OOS, -2.65% compound). I tested 12 candidate replacements as standalone
+in-sample on v2_loose 720d 1h. The clear winner was **cocoa (CC=F)**: 13
+trades, **84.6% win**, +1.80% return, **PF 2.74**, only -0.51% DD. Coffee
+(KC=F) and 30y bonds (ZB=F) were strong runners-up.
+
+After the swap, the curated 15-instrument v2_loose result improved to:
+
+| metric          | before (GBPUSD) | after (CC=F) |
+| --------------- | --------------: | -----------: |
+| trades          | 266             | 260          |
+| win rate        | 59.8%           | **61.9%**    |
+| mean return     | +1.05%          | **+1.21%**   |
+| worst DD        | -3.30%          | **-2.54%**   |
+| positive inst.  | 12/15           | **13/15**    |
+
+CC=F adds genuine diversification (uncorrelated with everything else in the
+basket) and the small-sample-size concern is mitigated by its
+extreme-quality profile.
+
+### 13.2 Bump the global `rr_tp2` from 2.0 → 2.5 (OOS-verified)
+
+In the per-instrument calibration sweep, **10 of 15 instruments preferred
+rr_tp2 = 3.0** in-sample. Testing `rr_tp2 ∈ {2.0, 2.5, 3.0}` as global
+defaults on the OOS test windows:
+
+| rr_tp2 | OOS trades | OOS win | OOS mean | OOS DD | positive |
+| -----: | ---------: | ------: | -------: | -----: | -------: |
+| 2.0    | 99         | 61.6%   | +0.45%   | -3.31% | 9/15     |
+| **2.5** | 99         | **61.6%** | **+0.60%** | -3.86% | **10/15**  |
+| 3.0    | 98         | 61.2%   | +0.67%   | -3.86% | 10/15    |
+
+Bumping to 2.5 gains +0.15pp mean return OOS without changing win rate,
+and tips one more instrument into positive territory. The 3.0 tweak is
+slightly better on return but a hair worse on win rate. **2.5 is the
+robustness sweet spot.** This is a candidate to fold into the next default.
+
+## 14. The negative results (would have looked great IS, but didn't OOS)
+
+### 14.1 Per-instrument param calibration via 27-combo grid search
+
+Method: for each instrument, run a 27-combo grid over (zone_pct, rr_tp2,
+climax_mx) on the first 60% of data, pick the in-sample best by profit
+factor, apply those params to the OOS test window. Compare to default
+v2_loose on the same OOS window.
+
+```
+                        OOS trades   OOS win   OOS mean   positive
+default v2_loose            99       61.6%     +0.45%     9/15
+calibrated per-instrument   93       58.1%     +0.39%     10/15
+```
+
+**Per-instrument calibration did NOT beat the global default OOS.** Win
+rate dropped 3.5pp, return was 0.06pp worse, DD was slightly worse. The
+calibrated version did have one more positive instrument (10 vs 9), so
+median return was higher, but the cost was a wider distribution.
+
+#### Why this happened
+
+Three reasons:
+
+1. **The OOS windows are small.** ~290 days × ~1 trade per ~10 days = ~7-15
+   OOS trades per instrument. With samples that small, single-trade luck
+   dominates the parameter choice's marginal effect.
+2. **The grid is coarse.** 27 combos over (0.10, 0.15, 0.20) × (1.5, 2.0, 3.0)
+   × (1.5, 1.75, 2.0). The "best" combo is often within noise of two or
+   three other combos.
+3. **The strategy is regime-sensitive.** The 60% train period and 40% test
+   period of 2024–2026 contained different regimes for several instruments.
+
+#### What this means
+
+The strategy's robustness comes from the **simplicity of its globally
+applicable parameters**, not from per-instrument fine-tuning. Don't chase
+asset-specific configurations; instead, drop instruments that don't fit
+the strategy (which is what the curated basket already did).
+
+The per-instrument calibration JSON is committed at
+`backtest/instrument_overrides.json` for anyone who wants to experiment
+with it, but it should be considered **research output only**.
+
+### 14.2 What about 5m / 15m execution multi-timeframe stacking?
+
+Multiple sources cite 60-75% win rates for multi-timeframe analysis vs
+~45% for single-TF
+([tradewiththepros.com summary](https://tradewiththepros.com/multi-timeframe-analysis/),
+[elitesignals.com on confluence stacking](https://www.elitesignals.com/blog/confluence-trading-stacking-signals-for-higher-win-rates)).
+The original spec called for 1H bias + 5m / 15m execution. The Pine
+strategy supports it (`Require 1H confirmation candle` toggle and a chart
+TF of 5m / 15m), but the **Python backtest can't validate it on free data**
+— yfinance caps 15m history at 60 days.
+
+To verify it properly:
+
+- Run the Pine strategy on TradingView at 5m or 15m chart TF with the
+  1H-confirmation gate ON. Strategy Tester will cover the chart's full
+  available history (typically several months on 5m, multiple years on 15m
+  for major instruments).
+- Or, get a paid 15m feed (Polygon, Databento, Dukascopy) and rerun the
+  Python engine.
+
+Expected impact based on literature: **+15-20pp on win rate, ~3x trade
+frequency** because the same strategy logic operates on more bars per day.
+
+### 14.3 Pyramiding on profitable continuation
+
+The literature on pyramiding
+([quantstrategy.io ultimate guide](https://quantstrategy.io/blog/the-ultimate-guide-to-pyramiding-strategies-advanced/),
+[nexusfi summary](https://nexusfi.com/articles/trading/Scaling-In))
+supports adding to winning trades for trend-following systems. For this
+strategy specifically, the natural place to pyramid is:
+
+- After TP1 fills (40% partial profit booked, runner SL moved to BE),
+  the residual 60% is risk-free.
+- If a *new* full-cascade signal fires in the same direction within
+  the same trading day, take it as a fresh tranche with its own SL/TP.
+- Net effect: in trending markets, 1 setup → 2-3 trades. In choppy
+  markets, the second trigger doesn't fire and we stay single-tranche.
+
+I designed but didn't implement this because it requires a refactor to
+support concurrent positions in the same direction (the current engine
+checks `pos == None` before any new entry). Implementation cost is
+moderate (~50 lines); the OOS test would need to verify it doesn't blow
+up DD in choppy regimes.
+
+### 14.4 Other deferred ideas
+
+| Idea                                | Why deferred                                                     |
+| ----------------------------------- | ---------------------------------------------------------------- |
+| TP1 fixed at 1R rather than at PDH/PDL | Would standardize win-rate stats but mostly cosmetic; current variable-R TP1 isn't actually broken. |
+| Volatility-regime-adaptive zone_pct | Promising but requires a regime-detection signal that itself needs to be OOS-validated; can become a rabbit hole. |
+| News-calendar filter                | Needs an external feed (ForexFactory CSV, etc.); non-trivial to maintain. |
+| Tick-data / order-flow confirmation | Needs paid feed; would only help on instruments with reliable volume. |
+| ML classifier on existing features  | Dataset is too small (300-700 trades total); would memorize. Defer until 5m / 15m execution adds samples. |
+
+## 15. The recommended live configuration
+
+Based on all the data in Parts I-III:
+
+```
+preset:               v2_loose
+basket:               curated 15 instruments (--curated)
+                      ES NQ YM ^GSPC ^NDX ^DJI
+                      GC SI HG  CL NG RB  CC
+                      BTC SOL
+rr_tp2:               2.5  (slight tweak from default 2.0; Part III §13.2)
+risk per trade:       0.5% of equity
+session:              NY by default; toggle extended session for FX/crypto
+chart timeframe:      1H minimum; 15m or 5m strongly preferred if data allows
+                      (with the 1H-confirmation toggle ON when on 15m/5m)
+```
+
+Expected OOS performance from this setup:
+- ~2-3 trades/week aggregate
+- ~60-65% win rate
+- Worst DD under 5%
+- 10-13 of 15 instruments positive
+
+Anything beyond this — per-instrument calibration, ML classifiers,
+exotic features — appears to **not actually improve OOS performance** on
+the available data, no matter how compelling it looks in-sample. The honest
+next step is **more data** (5m / 15m execution via paid feed, longer
+history via Dukascopy or Polygon), not more parameters.

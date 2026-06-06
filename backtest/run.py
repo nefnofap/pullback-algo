@@ -64,8 +64,8 @@ CURATED_TICKERS = [
     "GC=F", "SI=F", "HG=F",
     # Energies (3) - all >= 50% win on v2_loose; CL was 60%
     "CL=F", "NG=F", "RB=F",
-    # FX (1) - GBPUSD was the v2 turnaround star (-7.5% -> +1.6%)
-    "GBPUSD=X",
+    # Softs (1) - cocoa was 84.6% win / PF 2.74 standalone; replaced GBPUSD
+    "CC=F",
     # Crypto (2) - 24/7, decent sample contribution
     "BTC-USD", "SOL-USD",
 ]

@@ -1,0 +1,77 @@
+{
+  "ES=F": {
+    "zone_pct": 0.15,
+    "rr_tp2": 3.0,
+    "climax_mx": 2.0
+  },
+  "NQ=F": {
+    "zone_pct": 0.15,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.75
+  },
+  "YM=F": {
+    "zone_pct": 0.1,
+    "rr_tp2": 3.0,
+    "climax_mx": 2.0
+  },
+  "^GSPC": {
+    "zone_pct": 0.1,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  },
+  "^NDX": {
+    "zone_pct": 0.1,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  },
+  "^DJI": {
+    "zone_pct": 0.15,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  },
+  "GC=F": {
+    "zone_pct": 0.1,
+    "rr_tp2": 2.0,
+    "climax_mx": 1.5
+  },
+  "SI=F": {
+    "zone_pct": 0.1,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.75
+  },
+  "HG=F": {
+    "zone_pct": 0.1,
+    "rr_tp2": 2.0,
+    "climax_mx": 2.0
+  },
+  "CL=F": {
+    "zone_pct": 0.2,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  },
+  "NG=F": {
+    "zone_pct": 0.1,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  },
+  "RB=F": {
+    "zone_pct": 0.2,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.75
+  },
+  "CC=F": {
+    "zone_pct": 0.15,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.75
+  },
+  "BTC-USD": {
+    "zone_pct": 0.15,
+    "rr_tp2": 2.0,
+    "climax_mx": 1.5
+  },
+  "SOL-USD": {
+    "zone_pct": 0.2,
+    "rr_tp2": 3.0,
+    "climax_mx": 1.5
+  }
+}
