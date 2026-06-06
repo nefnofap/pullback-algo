@@ -1,0 +1,375 @@
+//@version=6
+// =============================================================================
+// Weekly Manipulation & Failed Breakout Strategy  (v2)
+// 1H macro context  +  15m / 5m execution
+//
+// v2 adds (all toggleable):
+//   * Daily 200 EMA HTF trend filter
+//   * Runner stop moves to entry +/- 0.1R after TP1 fills
+//   * ATR-multiple stop combined with the structural extreme
+//   * ADX trend-strength gate
+//   * Pin-bar and inside-bar-break triggers
+//   * Day-level sweep & reclaim state machine alongside the weekly fakeout
+//
+// See research/improvements.md for the rationale and citations.
+// =============================================================================
+
+strategy("Weekly Manipulation & Failed Breakout v2",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 2,
+     pyramiding           = 0,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.02,
+     calc_on_every_tick   = false,
+     process_orders_on_close = true,
+     max_labels_count     = 500,
+     max_lines_count      = 500,
+     max_boxes_count      = 500)
+
+// ----------------------------- INPUTS ----------------------------------------
+gCtx     = "Context & Levels"
+adrLen   = input.int   (14,    "ADR period (days)",      minval=2,  group=gCtx)
+climaxMx = input.float (1.75,  "Climax day x ADR",       minval=1.0, step=0.05, group=gCtx)
+zonePct  = input.float (0.15,  "Zone tolerance (x ADR)", minval=0.01, step=0.01, group=gCtx)
+
+gExe     = "Execution"
+patLen   = input.int   (8,     "Pattern lookback (bars)", minval=4, group=gExe)
+useEng   = input.bool  (true,  "Engulfing trigger",       group=gExe)
+useRR    = input.bool  (true,  "Railway-Tracks trigger",  group=gExe)
+usePin   = input.bool  (true,  "Pin-bar trigger",          group=gExe)
+useIns   = input.bool  (true,  "Inside-bar-break trigger", group=gExe)
+useMom   = input.bool  (false, "2-bar momentum trigger (Tier-4)",      group=gExe, tooltip="Two consecutive same-direction bars with above-average range. Lifts sample size; experimentally lifts win rate too.")
+useNR    = input.bool  (false, "NR4 expansion trigger (Tier-4)",       group=gExe, tooltip="Narrow-range-4 bar followed by an expansion bar in the bias direction.")
+loosePat = input.bool  (false, "Loose pattern (drop rectangle req.)",  group=gExe, tooltip="Allow any recent N-bar high/low break, not only consolidation breaks. Roughly triples setups.")
+pinWick  = input.float (0.6,   "Pin-bar wick ratio",      minval=0.4, maxval=0.9, step=0.05, group=gExe)
+brkExp   = input.int   (20,    "Breakout expiry (bars)",  minval=2, group=gExe)
+useHTF   = input.bool  (false, "Require 1H confirmation candle", group=gExe)
+htfRes   = input.timeframe("60", "Confirmation timeframe", group=gExe)
+usePWM   = input.bool  (false, "Add prior-week mid + H/L as value zones (Tier-4)", group=gExe)
+
+gFlt     = "Trend & Strength Filters"
+useTrend = input.bool  (true,  "Daily trend filter (200 EMA)", group=gFlt, tooltip="Only allow longs when D close > 200EMA, shorts below")
+trendLen = input.int   (200,   "Trend EMA period",         minval=20, group=gFlt)
+useAdx   = input.bool  (true,  "ADX trend-strength gate",  group=gFlt)
+adxLen   = input.int   (14,    "ADX period",               minval=5, group=gFlt)
+adxThr   = input.float (22.0,  "ADX threshold",            minval=10.0, step=0.5, group=gFlt)
+useSwp   = input.bool  (true,  "Day-level sweep latch (PDH/PDL)", group=gFlt, tooltip="Mirror of the weekly Mon/Tue fakeout, anchored to the previous day's H/L and reset on a new day")
+
+gSes     = "Session"
+useNY    = input.bool  (true,  "Trade only NY session",   group=gSes)
+nySess   = input.session("0930-1600", "NY session",       group=gSes)
+
+gRsk     = "Risk"
+slBuf    = input.float (0.10,  "Stop buffer (x ADR)",     minval=0.0, step=0.01, group=gRsk)
+useAtrSL = input.bool  (true,  "Combine with ATR-multiple stop", group=gRsk, tooltip="Final SL is whichever is wider: structural extreme +/- ADR buffer, or entry +/- k*ATR")
+atrK     = input.float (1.5,   "ATR stop multiplier (k)", minval=0.5, step=0.1, group=gRsk)
+tp1Pct   = input.float (40,    "TP1 size %",              minval=1, maxval=100, group=gRsk)
+rrTP2    = input.float (2.0,   "TP2 reward multiple",     minval=0.5, step=0.1,  group=gRsk)
+useRunBE = input.bool  (true,  "Move runner SL to BE+offset after TP1", group=gRsk)
+runOff   = input.float (0.10,  "Runner BE offset (x R)",  minval=0.0, step=0.01, group=gRsk)
+
+gVis     = "Visuals"
+showLbls = input.bool  (true,  "Show TD/Inside/FakeOut labels", group=gVis)
+showLvls = input.bool  (true,  "Plot key levels",                group=gVis)
+
+// ------------------------- HIGHER TIMEFRAME DATA -----------------------------
+[dH1, dL1, dC1, dH2, dL2, dRange1, adrSrc, dEmaSrc] = request.security(
+     syminfo.tickerid, "D",
+     [high[1], low[1], close[1], high[2], low[2], (high - low)[1],
+      ta.sma(high - low, adrLen)[1],
+      ta.ema(close, trendLen)[1]],
+     lookahead = barmerge.lookahead_on)
+
+[wH, wL] = request.security(syminfo.tickerid, "W",
+     [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+pdH       = dH1
+pdL       = dL1
+pdC       = dC1
+adr       = nz(adrSrc, 0.0)
+zone      = adr * zonePct
+prevRng   = nz(dRange1, 0.0)
+trendEma  = nz(dEmaSrc, na)
+
+// ------------------------ DAY-CLASSIFICATION FLAGS ---------------------------
+isTDup    = dH1 >  dH2
+isTDdown  = dL1 <  dL2
+isInsideY = dH1 <= dH2 and dL1 >= dL2
+climaxYday = adr > 0 and prevRng > climaxMx * adr
+
+htfDown = dL1 < dL2 and dH1 < dH2
+htfUp   = dH1 > dH2 and dL1 > dL2
+
+bisBull = htfDown and high > pdH
+bisBear = htfUp   and low  < pdL
+
+// ----------------- WEEKLY FAKEOUT STATE MACHINE (Mon/Tue trap) ---------------
+dow     = dayofweek(time, syminfo.timezone)
+earlyW  = dow == dayofweek.monday or dow == dayofweek.tuesday
+newWeek = ta.change(time("W")) != 0
+newDay  = ta.change(time("D")) != 0
+
+var bool pendUp  = false
+var bool pendDn  = false
+var bool foShort = false
+var bool foLong  = false
+
+if newWeek
+    pendUp  := false
+    pendDn  := false
+    foShort := false
+    foLong  := false
+if earlyW and not na(wH) and high > wH
+    pendUp := true
+if earlyW and not na(wL) and low  < wL
+    pendDn := true
+if pendUp and close < wH
+    foShort := true
+    pendUp  := false
+if pendDn and close > wL
+    foLong  := true
+    pendDn  := false
+
+foShortJust = foShort and not foShort[1]
+foLongJust  = foLong  and not foLong[1]
+
+// ---------- DAY-LEVEL SWEEP STATE MACHINE (Tier-2 #2.6) ----------------------
+var bool pendUpD  = false
+var bool pendDnD  = false
+var bool foShortD = false
+var bool foLongD  = false
+
+if newDay
+    pendUpD  := false
+    pendDnD  := false
+    foShortD := false
+    foLongD  := false
+if useSwp and not na(pdH) and high > pdH
+    pendUpD := true
+if useSwp and not na(pdL) and low  < pdL
+    pendDnD := true
+if useSwp and pendUpD and close < pdH
+    foShortD := true
+    pendUpD  := false
+if useSwp and pendDnD and close > pdL
+    foLongD  := true
+    pendDnD  := false
+
+anyShort = foShort or (useSwp and foShortD)
+anyLong  = foLong  or (useSwp and foLongD)
+
+// ----------------------------- SETUP ZONES -----------------------------------
+bullBias = anyLong  or bisBull
+bearBias = anyShort or bisBear
+
+buyZone  = (low  >= pdL - zone and low  <= pdL + zone) or (low  >= pdC - zone and low  <= pdC + zone) or (bisBull and low  >= pdH - zone and low  <= pdH + zone) or (usePWM and not na(wH) and not na(wL) and (low >= (wH+wL)/2 - zone and low <= (wH+wL)/2 + zone or low >= wL - zone and low <= wL + zone))
+sellZone = (high >= pdH - zone and high <= pdH + zone) or (high >= pdC - zone and high <= pdC + zone) or (bisBear and high >= pdL - zone and high <= pdL + zone) or (usePWM and not na(wH) and not na(wL) and (high >= (wH+wL)/2 - zone and high <= (wH+wL)/2 + zone or high >= wH - zone and high <= wH + zone))
+
+longSetup  = bullBias and buyZone
+shortSetup = bearBias and sellZone
+
+tradingAllowed = adr > 0 and not climaxYday
+
+// ------------------ PATTERN BREAKOUT ON THE EXECUTION TF ---------------------
+priorHi = ta.highest(high[1], patLen)
+priorLo = ta.lowest (low[1],  patLen)
+rectRng = priorHi - priorLo
+isRect  = loosePat or (rectRng > 0 and rectRng < adr * 0.5)
+
+breakUp = isRect and close > priorHi
+breakDn = isRect and close < priorLo
+
+var float lastBkLvlUp = na
+var float lastBkLvlDn = na
+var int   lastBkBarUp = na
+var int   lastBkBarDn = na
+
+if breakUp
+    lastBkLvlUp := priorHi
+    lastBkBarUp := bar_index
+if breakDn
+    lastBkLvlDn := priorLo
+    lastBkBarDn := bar_index
+
+pbUpReady = not na(lastBkBarUp) and (bar_index - lastBkBarUp) <= brkExp and not na(lastBkLvlUp) and low  <= lastBkLvlUp + zone and close > lastBkLvlUp
+pbDnReady = not na(lastBkBarDn) and (bar_index - lastBkBarDn) <= brkExp and not na(lastBkLvlDn) and high >= lastBkLvlDn - zone and close < lastBkLvlDn
+
+// --------------------------- ENTRY TRIGGERS ----------------------------------
+bullEng = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearEng = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+bn  = math.abs(close - open)
+bp  = math.abs(close[1] - open[1])
+sim = bp > 0 and bn > 0 and math.min(bn, bp) / math.max(bn, bp) > 0.7
+
+bullRR = close > open and close[1] < open[1] and sim
+bearRR = close < open and close[1] > open[1] and sim
+
+// Pin bars
+rngBar    = high - low
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+pinBull   = rngBar > 0 and lowerWick / rngBar >= pinWick and close > (high + low) / 2 and low  < math.min(low[1],  low[2])
+pinBear   = rngBar > 0 and upperWick / rngBar >= pinWick and close < (high + low) / 2 and high > math.max(high[1], high[2])
+
+// Inside-bar break
+insidePrev = high[1] < high[2] and low[1] > low[2]
+insideBull = insidePrev and close > high[1] and close > open
+insideBear = insidePrev and close < low[1]  and close < open
+
+// Tier-4: 2-bar momentum (consecutive same-direction with above-avg range)
+avgRng     = ta.sma(rngBar, 20)
+bigBar     = rngBar > avgRng
+bigPrev    = bigBar[1]
+momBull    = (close > open) and (close[1] < open[1]) and bigBar and bigPrev and (close > close[1]) and (open > open[1])
+momBear    = (close < open) and (close[1] > open[1]) and bigBar and bigPrev and (close < close[1]) and (open < open[1])
+
+// Tier-4: NR4 + expansion
+isNR4Prev  = rngBar[1] == ta.lowest(rngBar, 4)[1]
+nrBull     = isNR4Prev and (close > open) and (close > high[1]) and (rngBar > rngBar[1])
+nrBear     = isNR4Prev and (close < open) and (close < low[1])  and (rngBar > rngBar[1])
+
+trigBull = (useEng and bullEng) or (useRR and bullRR) or (usePin and pinBull) or (useIns and insideBull) or (useMom and momBull) or (useNR and nrBull)
+trigBear = (useEng and bearEng) or (useRR and bearRR) or (usePin and pinBear) or (useIns and insideBear) or (useMom and momBear) or (useNR and nrBear)
+
+// ------------- OPTIONAL HTF (1H by default) CONFIRMATION CANDLE --------------
+trigBullHTF() =>
+    e  = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+    bn2 = math.abs(close - open)
+    bp2 = math.abs(close[1] - open[1])
+    s  = bp2 > 0 and bn2 > 0 and math.min(bn2, bp2) / math.max(bn2, bp2) > 0.7
+    rr = close > open and close[1] < open[1] and s
+    e or rr
+
+trigBearHTF() =>
+    e  = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+    bn2 = math.abs(close - open)
+    bp2 = math.abs(close[1] - open[1])
+    s  = bp2 > 0 and bn2 > 0 and math.min(bn2, bp2) / math.max(bn2, bp2) > 0.7
+    rr = close < open and close[1] > open[1] and s
+    e or rr
+
+[htfBullTrig, htfBearTrig] = request.security(
+     syminfo.tickerid, htfRes,
+     [trigBullHTF()[1], trigBearHTF()[1]],
+     lookahead = barmerge.lookahead_on)
+
+htfBullOK = not useHTF or htfBullTrig
+htfBearOK = not useHTF or htfBearTrig
+
+// --------------------------- TREND & ADX FILTERS -----------------------------
+trendLongOK  = not useTrend or na(trendEma) or close > trendEma
+trendShortOK = not useTrend or na(trendEma) or close < trendEma
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxOK = not useAdx or na(adxVal) or adxVal >= adxThr
+
+// ----------------------------- SESSION FILTER --------------------------------
+inNY = not useNY or not na(time(timeframe.period, nySess))
+
+// ------------------------------- ENTRIES -------------------------------------
+slBufVal = adr * slBuf
+atrChart = ta.atr(adxLen)
+
+longCond  = tradingAllowed and inNY and longSetup  and pbUpReady and trigBull and htfBullOK and trendLongOK  and adxOK
+shortCond = tradingAllowed and inNY and shortSetup and pbDnReady and trigBear and htfBearOK and trendShortOK and adxOK
+
+// Track entry context for runner-BE move
+var float entryPx     = na
+var float origSL      = na
+var float origRisk    = na
+var float tp2Saved    = na
+var bool  partialDone = false
+var int   posSide     = 0   // +1 long, -1 short, 0 flat
+
+if posSide != 0 and strategy.position_size == 0
+    posSide     := 0
+    partialDone := false
+    entryPx     := na
+    origSL      := na
+    origRisk    := na
+
+if longCond and posSide == 0
+    slStruct = math.min(low, low[1]) - slBufVal
+    slAtr    = useAtrSL and not na(atrChart) ? close - atrK * atrChart : slStruct
+    sl       = math.min(slStruct, slAtr)
+    risk     = close - sl
+    tp1      = pdH
+    tp2      = close + rrTP2 * risk
+    if risk > 0 and tp1 > close
+        strategy.entry("L", strategy.long, comment="BuyLow")
+        strategy.exit ("L-T1", from_entry="L", limit=tp1, stop=sl, qty_percent=tp1Pct)
+        strategy.exit ("L-T2", from_entry="L", limit=tp2, stop=sl)
+        entryPx     := close
+        origSL      := sl
+        origRisk    := risk
+        tp2Saved    := tp2
+        partialDone := false
+        posSide     := 1
+
+if shortCond and posSide == 0
+    slStruct = math.max(high, high[1]) + slBufVal
+    slAtr    = useAtrSL and not na(atrChart) ? close + atrK * atrChart : slStruct
+    sl       = math.max(slStruct, slAtr)
+    risk     = sl - close
+    tp1      = pdL
+    tp2      = close - rrTP2 * risk
+    if risk > 0 and tp1 < close
+        strategy.entry("S", strategy.short, comment="SellHigh")
+        strategy.exit ("S-T1", from_entry="S", limit=tp1, stop=sl, qty_percent=tp1Pct)
+        strategy.exit ("S-T2", from_entry="S", limit=tp2, stop=sl)
+        entryPx     := close
+        origSL      := sl
+        origRisk    := risk
+        tp2Saved    := tp2
+        partialDone := false
+        posSide     := -1
+
+// Runner-BE move: detect TP1 fill via price reaching the daily target
+if useRunBE and posSide == 1 and not partialDone and not na(tp2Saved) and high >= pdH and not na(origRisk)
+    partialDone := true
+    newSL = entryPx + runOff * origRisk
+    strategy.exit("L-T2", from_entry="L", limit=tp2Saved, stop=newSL)
+if useRunBE and posSide == -1 and not partialDone and not na(tp2Saved) and low <= pdL and not na(origRisk)
+    partialDone := true
+    newSL = entryPx - runOff * origRisk
+    strategy.exit("S-T2", from_entry="S", limit=tp2Saved, stop=newSL)
+
+// -------------------------------- VISUALS ------------------------------------
+plot(showLvls ? pdH : na, "PDH", color=color.new(color.red,    0), style=plot.style_circles)
+plot(showLvls ? pdL : na, "PDL", color=color.new(color.green,  0), style=plot.style_circles)
+plot(showLvls ? pdC : na, "PDC", color=color.new(color.gray,   0), style=plot.style_circles)
+plot(showLvls ? wH  : na, "PWH", color=color.new(color.maroon, 0), style=plot.style_linebr, linewidth=2)
+plot(showLvls ? wL  : na, "PWL", color=color.new(color.teal,   0), style=plot.style_linebr, linewidth=2)
+plot(showLvls and useTrend ? trendEma : na, "Trend EMA", color=color.new(color.aqua, 30), linewidth=1)
+
+if showLbls and newDay
+    if isTDup
+        label.new(bar_index, high, "TD up",   style=label.style_label_down,
+             color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+    else if isTDdown
+        label.new(bar_index, low,  "TD dn",   style=label.style_label_up,
+             color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+    else if isInsideY
+        label.new(bar_index, high, "Inside",  style=label.style_label_down,
+             color=color.new(color.blue, 50), textcolor=color.white, size=size.tiny)
+    if climaxYday
+        label.new(bar_index, low,  "Climax",  style=label.style_label_up,
+             color=color.new(color.fuchsia, 30), textcolor=color.white, size=size.tiny)
+
+if showLbls and foShortJust
+    label.new(bar_index, high, "FakeOut up",  style=label.style_label_down,
+         color=color.new(color.purple, 0), textcolor=color.white, size=size.small)
+if showLbls and foLongJust
+    label.new(bar_index, low,  "FakeOut dn",  style=label.style_label_up,
+         color=color.new(color.purple, 0), textcolor=color.white, size=size.small)
+
+// --------------------------------- ALERTS ------------------------------------
+alertcondition(foShortJust, "Weekly High Reclaimed (Bearish)",
+     "Price pierced previous-week high and reclaimed inside range")
+alertcondition(foLongJust,  "Weekly Low Reclaimed (Bullish)",
+     "Price pierced previous-week low and reclaimed inside range")
+alertcondition(longCond,    "Long Setup Triggered",  "Buy-Low long entry signal")
+alertcondition(shortCond,   "Short Setup Triggered", "Sell-High short entry signal")
