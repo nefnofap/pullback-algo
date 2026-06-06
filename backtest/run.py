@@ -43,6 +43,14 @@ DEFAULT_TICKERS = [
     "BTC-USD", "ETH-USD",
 ]
 
+# Wider basket — adds JPY crosses, NZDUSD, energies, more crypto.
+# Use with --tickers BIG to opt in.
+WIDE_TICKERS = DEFAULT_TICKERS + [
+    "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "EURGBP=X",
+    "CL=F", "NG=F", "RB=F",
+    "SOL-USD", "XRP-USD", "DOGE-USD",
+]
+
 # Curated basket with deep history for the 20-year daily run.
 # Picked instruments where yfinance reliably returns 5000+ daily bars.
 LONG_HISTORY_TICKERS = [
@@ -128,6 +136,18 @@ def make_v2_params(use_ny: bool, daily_mode: bool) -> Params:
     return p
 
 
+def make_v2_loose_params(use_ny: bool, daily_mode: bool) -> Params:
+    """V2 + Tier 4 sample-size broadeners: loose pattern, prior-week-mid zones,
+    momentum + NR-expansion triggers, lower pin-wick threshold."""
+    p = make_v2_params(use_ny, daily_mode)
+    return replace(p,
+                   loose_pattern=True,
+                   use_pwm_zone=True,
+                   use_momentum_trig=True,
+                   use_nr_expansion=True,
+                   pin_wick_ratio=0.5)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -158,12 +178,23 @@ def main() -> int:
                     help="run the v1 baseline strategy (Tier 1+2 off)")
     ap.add_argument("--vs-baseline", action="store_true",
                     help="run baseline AND v2 in one go and print a delta table")
+    ap.add_argument("--loose", action="store_true",
+                    help="use v2_loose preset (Tier 4 sample-size broadeners on)")
+    ap.add_argument("--three-way", action="store_true",
+                    help="run baseline, v2, AND v2_loose for full comparison")
+    ap.add_argument("--big", action="store_true",
+                    help="use the wider 32-ticker basket (FX crosses + energies + altcoins)")
     ap.add_argument("--out-csv", default=None)
     args = ap.parse_args()
 
     # ---- defaults ---------------------------------------------------------
     if args.tickers is None:
-        args.tickers = LONG_HISTORY_TICKERS if args.daily else DEFAULT_TICKERS
+        if args.daily:
+            args.tickers = LONG_HISTORY_TICKERS
+        elif args.big:
+            args.tickers = WIDE_TICKERS
+        else:
+            args.tickers = DEFAULT_TICKERS
     if args.interval is None:
         args.interval = "1d" if args.daily else "1h"
     if args.period is None:
@@ -178,15 +209,23 @@ def main() -> int:
     def _make(preset: str) -> Params:
         if preset == "baseline":
             p = make_baseline_params(use_ny, daily_mode)
+        elif preset == "v2_loose":
+            p = make_v2_loose_params(use_ny, daily_mode)
         else:
             p = make_v2_params(use_ny, daily_mode)
         return replace(p, risk_pct=args.risk_pct / 100.0)
 
     presets = []
-    if args.vs_baseline:
+    if args.three_way:
+        presets = [("baseline", _make("baseline")),
+                   ("v2",       _make("v2")),
+                   ("v2_loose", _make("v2_loose"))]
+    elif args.vs_baseline:
         presets = [("baseline", _make("baseline")), ("v2", _make("v2"))]
     elif args.baseline:
         presets = [("baseline", _make("baseline"))]
+    elif args.loose:
+        presets = [("v2_loose", _make("v2_loose"))]
     else:
         presets = [("v2", _make("v2"))]
 

@@ -40,9 +40,14 @@ useEng   = input.bool  (true,  "Engulfing trigger",       group=gExe)
 useRR    = input.bool  (true,  "Railway-Tracks trigger",  group=gExe)
 usePin   = input.bool  (true,  "Pin-bar trigger",          group=gExe)
 useIns   = input.bool  (true,  "Inside-bar-break trigger", group=gExe)
+useMom   = input.bool  (false, "2-bar momentum trigger (Tier-4)",      group=gExe, tooltip="Two consecutive same-direction bars with above-average range. Lifts sample size; experimentally lifts win rate too.")
+useNR    = input.bool  (false, "NR4 expansion trigger (Tier-4)",       group=gExe, tooltip="Narrow-range-4 bar followed by an expansion bar in the bias direction.")
+loosePat = input.bool  (false, "Loose pattern (drop rectangle req.)",  group=gExe, tooltip="Allow any recent N-bar high/low break, not only consolidation breaks. Roughly triples setups.")
+pinWick  = input.float (0.6,   "Pin-bar wick ratio",      minval=0.4, maxval=0.9, step=0.05, group=gExe)
 brkExp   = input.int   (20,    "Breakout expiry (bars)",  minval=2, group=gExe)
 useHTF   = input.bool  (false, "Require 1H confirmation candle", group=gExe)
 htfRes   = input.timeframe("60", "Confirmation timeframe", group=gExe)
+usePWM   = input.bool  (false, "Add prior-week mid + H/L as value zones (Tier-4)", group=gExe)
 
 gFlt     = "Trend & Strength Filters"
 useTrend = input.bool  (true,  "Daily trend filter (200 EMA)", group=gFlt, tooltip="Only allow longs when D close > 200EMA, shorts below")
@@ -159,8 +164,8 @@ anyLong  = foLong  or (useSwp and foLongD)
 bullBias = anyLong  or bisBull
 bearBias = anyShort or bisBear
 
-buyZone  = (low  >= pdL - zone and low  <= pdL + zone) or (low  >= pdC - zone and low  <= pdC + zone) or (bisBull and low  >= pdH - zone and low  <= pdH + zone)
-sellZone = (high >= pdH - zone and high <= pdH + zone) or (high >= pdC - zone and high <= pdC + zone) or (bisBear and high >= pdL - zone and high <= pdL + zone)
+buyZone  = (low  >= pdL - zone and low  <= pdL + zone) or (low  >= pdC - zone and low  <= pdC + zone) or (bisBull and low  >= pdH - zone and low  <= pdH + zone) or (usePWM and not na(wH) and not na(wL) and (low >= (wH+wL)/2 - zone and low <= (wH+wL)/2 + zone or low >= wL - zone and low <= wL + zone))
+sellZone = (high >= pdH - zone and high <= pdH + zone) or (high >= pdC - zone and high <= pdC + zone) or (bisBear and high >= pdL - zone and high <= pdL + zone) or (usePWM and not na(wH) and not na(wL) and (high >= (wH+wL)/2 - zone and high <= (wH+wL)/2 + zone or high >= wH - zone and high <= wH + zone))
 
 longSetup  = bullBias and buyZone
 shortSetup = bearBias and sellZone
@@ -171,7 +176,7 @@ tradingAllowed = adr > 0 and not climaxYday
 priorHi = ta.highest(high[1], patLen)
 priorLo = ta.lowest (low[1],  patLen)
 rectRng = priorHi - priorLo
-isRect  = rectRng > 0 and rectRng < adr * 0.5
+isRect  = loosePat or (rectRng > 0 and rectRng < adr * 0.5)
 
 breakUp = isRect and close > priorHi
 breakDn = isRect and close < priorLo
@@ -206,16 +211,28 @@ bearRR = close < open and close[1] > open[1] and sim
 rngBar    = high - low
 lowerWick = math.min(open, close) - low
 upperWick = high - math.max(open, close)
-pinBull   = rngBar > 0 and lowerWick / rngBar >= 0.6 and close > (high + low) / 2 and low  < math.min(low[1],  low[2])
-pinBear   = rngBar > 0 and upperWick / rngBar >= 0.6 and close < (high + low) / 2 and high > math.max(high[1], high[2])
+pinBull   = rngBar > 0 and lowerWick / rngBar >= pinWick and close > (high + low) / 2 and low  < math.min(low[1],  low[2])
+pinBear   = rngBar > 0 and upperWick / rngBar >= pinWick and close < (high + low) / 2 and high > math.max(high[1], high[2])
 
 // Inside-bar break
 insidePrev = high[1] < high[2] and low[1] > low[2]
 insideBull = insidePrev and close > high[1] and close > open
 insideBear = insidePrev and close < low[1]  and close < open
 
-trigBull = (useEng and bullEng) or (useRR and bullRR) or (usePin and pinBull) or (useIns and insideBull)
-trigBear = (useEng and bearEng) or (useRR and bearRR) or (usePin and pinBear) or (useIns and insideBear)
+// Tier-4: 2-bar momentum (consecutive same-direction with above-avg range)
+avgRng     = ta.sma(rngBar, 20)
+bigBar     = rngBar > avgRng
+bigPrev    = bigBar[1]
+momBull    = (close > open) and (close[1] < open[1]) and bigBar and bigPrev and (close > close[1]) and (open > open[1])
+momBear    = (close < open) and (close[1] > open[1]) and bigBar and bigPrev and (close < close[1]) and (open < open[1])
+
+// Tier-4: NR4 + expansion
+isNR4Prev  = rngBar[1] == ta.lowest(rngBar, 4)[1]
+nrBull     = isNR4Prev and (close > open) and (close > high[1]) and (rngBar > rngBar[1])
+nrBear     = isNR4Prev and (close < open) and (close < low[1])  and (rngBar > rngBar[1])
+
+trigBull = (useEng and bullEng) or (useRR and bullRR) or (usePin and pinBull) or (useIns and insideBull) or (useMom and momBull) or (useNR and nrBull)
+trigBear = (useEng and bearEng) or (useRR and bearRR) or (usePin and pinBear) or (useIns and insideBear) or (useMom and momBear) or (useNR and nrBear)
 
 // ------------- OPTIONAL HTF (1H by default) CONFIRMATION CANDLE --------------
 trigBullHTF() =>

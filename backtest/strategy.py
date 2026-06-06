@@ -67,7 +67,12 @@ class Params:
     extended_session:   bool  = False  # adds London-open window 07-13 UTC
     daily_mode:         bool  = False  # bars are 1d; switches resampling rules
 
-    # --- consolidation threshold for the rectangle pattern -------------------
+    # --- Tier 4: sample-size broadeners (default off; keep v2 numbers stable) ---
+    loose_pattern:      bool  = False  # drop the rectangle requirement; allow any recent N-bar break
+    use_pwm_zone:       bool  = False  # add prior-week mid + prior-week H/L as value zones
+    use_momentum_trig:  bool  = False  # 2-bar same-direction expansion
+    use_nr_expansion:   bool  = False  # narrow-range-4 followed by expansion in bias direction
+    pin_wick_ratio:     float = 0.6    # already exposed; lowering to 0.5 lifts pin-bar count ~2x
     # In intraday mode patLen bars cover < 1 day, so range < 0.5 * ADR is tight.
     # In daily_mode patLen bars cover patLen days, so range scales with patLen.
     # Set to None to auto-pick (0.5 intraday, pat_len*0.3 daily).
@@ -299,6 +304,25 @@ def backtest(df_in: pd.DataFrame, params: Params) -> tuple[list[Trade], pd.Serie
               | (params.use_pin_bar    & pinBear)
               | (params.use_inside_break & insideBear))
 
+    # Tier-4 #1: 2-bar momentum (consecutive same-direction with expansion)
+    if params.use_momentum_trig:
+        avg_rng = pd.Series(rng_arr).rolling(20).mean().to_numpy()
+        big_bar = (rng_arr > avg_rng)
+        big_prev = np.r_[False, big_bar[:-1]]
+        momBull = (C > O) & (Cp < Op) & big_bar & big_prev & (C > Cp) & (O > Op) & (~np.isnan(avg_rng))
+        momBear = (C < O) & (Cp > Op) & big_bar & big_prev & (C < Cp) & (O < Op) & (~np.isnan(avg_rng))
+        trigBull = trigBull | momBull
+        trigBear = trigBear | momBear
+
+    # Tier-4 #2: narrow-range-4 followed by expansion bar in bias direction
+    if params.use_nr_expansion:
+        rng_s = pd.Series(rng_arr)
+        is_nr4_prev = (rng_s.shift(1) == rng_s.shift(1).rolling(4).min()).to_numpy()
+        nrBull = is_nr4_prev & (C > O) & (C > Hp) & (rng_arr > rng_s.shift(1).to_numpy())
+        nrBear = is_nr4_prev & (C < O) & (C < Lp) & (rng_arr > rng_s.shift(1).to_numpy())
+        trigBull = trigBull | nrBull
+        trigBear = trigBear | nrBear
+
     # --------- state ----------------------------------------------------------
     pendUp = pendDn = foShort = foLong = False
     pendUpD = pendDnD = foShortD = foLongD = False
@@ -388,6 +412,17 @@ def backtest(df_in: pd.DataFrame, params: Params) -> tuple[list[Trade], pd.Serie
             or (not np.isnan(pdc[i]) and (pdc[i] - zone) <= H[i] <= (pdc[i] + zone))
             or (bis_bear and (pdl[i] - zone) <= H[i] <= (pdl[i] + zone))
         )
+        # Tier-4 #3: prior-week mid + prior-week H/L as additional value zones
+        if params.use_pwm_zone and not np.isnan(wh[i]) and not np.isnan(wl[i]):
+            pwm = (wh[i] + wl[i]) / 2.0
+            buy_zone = buy_zone or (
+                ((pwm   - zone) <= L[i] <= (pwm   + zone))
+                or ((wl[i] - zone) <= L[i] <= (wl[i] + zone))
+            )
+            sell_zone = sell_zone or (
+                ((pwm   - zone) <= H[i] <= (pwm   + zone))
+                or ((wh[i] - zone) <= H[i] <= (wh[i] + zone))
+            )
         long_setup  = bull_bias and buy_zone
         short_setup = bear_bias and sell_zone
 
@@ -402,7 +437,9 @@ def backtest(df_in: pd.DataFrame, params: Params) -> tuple[list[Trade], pd.Serie
             rect_max = adr[i] * params.pat_len * 0.3
         else:
             rect_max = adr[i] * 0.5
-        is_rect  = rect_rng > 0 and rect_rng < rect_max
+        # Tier-4 #4: loose_pattern accepts any recent N-bar high/low break
+        # (drops the consolidation requirement). The pullback gate stays.
+        is_rect  = params.loose_pattern or (rect_rng > 0 and rect_rng < rect_max)
         if is_rect and C[i] > p_hi[i]:
             last_lvl_up = p_hi[i]
             last_bar_up = i

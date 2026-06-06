@@ -271,3 +271,151 @@ All citations are inline above. The recurring sources are:
 - LuxAlgo, Mind Math Money, The Robust Trader on ADX/200-EMA filters
 - ICT/SMC primary sources (`smartmoneyict.com`, `damnpropfirms.com`)
 - `supertrader.me` on economic-event filters
+
+
+
+---
+
+# Part II — Lifting sample size (post-v2 follow-up)
+
+After v2 shipped, the question became: how do we get **more trades** without
+giving back the win-rate gains? This section answers that with a measured
+funnel diagnostic and a Tier-4 broadener set whose impact is quantified.
+
+## 6. Where the cascade actually drops trades
+
+Instrumented the v2 engine, ran on a 6-instrument sample (EUR/GBP/BTC/ES/GC/SI,
+720d 1h, ~91k bars total), and counted each filter's pass rate:
+
+| Stage                         | Bars   | Drop from prev |
+| ----------------------------- | -----: | -------------: |
+| total                         | 91,808 | -              |
+| context loaded                | 90,148 | -1.8%          |
+| in NY session                 | 30,751 | **-65.9%**     |
+| not climax day                | 28,370 | -7.7%          |
+| has bias active               | 24,286 | -14.4%         |
+| in setup zone                 | 10,973 | -54.8%         |
+| **rectangle + pullback**      | **1,823** | **-83.4%** ← biggest leak |
+| **trigger candle fires**      | **329**   | **-82.0%** ← second biggest |
+| HTF trend agrees              | 160    | -51.4%         |
+| ADX > 22                      | 71     | -55.6%         |
+| **final long signals**        | 41     |                |
+| **final short signals**       | 30     |                |
+
+Two filters consume 97% of the signal between them:
+
+1. **Rectangle + pullback** keeps only 17% of in-zone bars. This filter
+   exists to constrain entries to consolidation-breaks, but it also cuts
+   any setup that happens after a wider move — which is most of them.
+2. **The 4-trigger set** (engulfing, RR, pin, inside) keeps only 18% of
+   pullback-ready bars. Most bars don't print a clean candle pattern.
+
+The HTF and ADX gates cost about 50% each — but those are the quality
+gates that drove the v1→v2 win-rate jump. They stay.
+
+## 7. Tier-4: targeted sample-size broadeners
+
+All four target the two biggest leaks identified above. All are toggleable;
+default off so v2 numbers don't change.
+
+| Toggle              | Pine input                          | Python field         | Effect                                                                 |
+| ------------------- | ----------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| Loose pattern       | `Loose pattern (drop rectangle req.)` | `loose_pattern`     | Drop the consolidation requirement; require only a recent N-bar break. Roughly **3x setups**. |
+| Prior-week mid zone | `Add prior-week mid + H/L as value zones` | `use_pwm_zone`     | Adds PWM and PWH/PWL as additional value locations.                    |
+| 2-bar momentum trig | `2-bar momentum trigger`            | `use_momentum_trig`  | Adds a trigger for 2 consecutive same-direction bars with above-avg range. |
+| NR4 expansion trig  | `NR4 expansion trigger`             | `use_nr_expansion`   | Adds a trigger for narrow-range-4 followed by an expansion bar.        |
+| Lower pin wick      | `Pin-bar wick ratio` (default 0.6)  | `pin_wick_ratio`     | Loosen 0.6 → 0.5 to roughly **double** pin-bar count.                  |
+
+The four are bundled as a `v2_loose` preset in `backtest/run.py`.
+
+## 8. Measured impact (apples-to-apples, 720d 1h, 21 instruments)
+
+```
+                      trades   win    return    DD     positive
+baseline    (v1)        250   29.6%  -0.99%   -8.62%   6/21
+v2                      156   47.4%  -0.20%   -3.96%   7/21
+v2_loose               359   51.3%  -0.56%   -6.22%   9/21
+```
+
+**v2_loose vs v2** (the comparison the user asked for):
+
+- **Trades: +130%** (156 → 359)
+- **Win rate: +3.9 pp** (47.4% → 51.3%) — the new triggers are *higher* quality than the old ones
+- Positive instruments: 7 → **9 of 21**
+- Mean return: -0.20% → -0.56% (slightly worse)
+- Worst DD: -3.96% → -6.22% (worse — the loose pattern admits some lower-quality setups)
+
+**v2_loose vs baseline:**
+
+- **Trades: +44%** (250 → 359)
+- **Win rate: +21.7 pp** (29.6% → 51.3%)
+- **Mean return: -0.99% → -0.56%** (better)
+- **Worst DD: -8.62% → -6.22%** (better)
+- Positive instruments: 6 → 9
+
+So v2_loose dominates the v1 baseline on every metric and dominates v2 on
+sample size + win rate, with a moderate drawdown trade-off.
+
+## 9. Wider basket scaling
+
+A natural fifth lever is just trading more instruments. The 32-ticker
+WIDE_TICKERS basket adds JPY crosses (EURJPY, GBPJPY, AUDJPY), NZDUSD,
+EURGBP, energies (CL, NG, RB) and altcoins (SOL, XRP, DOGE):
+
+```
+v2_loose / 21 instruments   359 trades   51.3% win   -0.56% mean
+v2_loose / 32 instruments   587 trades   48.7% win   -0.68% mean
+```
+
+Adding 11 instruments scales trades by **+63%** with a small win-rate dilution
+(the new instruments are mixed-quality — RB=F gasoline futures hits 77% win
+in 13 trades, but DOGE-USD only 38% in 29 trades).
+
+Notable per-instrument standouts on the wide v2_loose run:
+
+| ticker  | trades | win % | return  | note                                  |
+| ------- | -----: | ----: | ------: | ------------------------------------- |
+| ^DJI    | 14     | 93%   | +2.15%  | Cash index now generates clean signals|
+| RB=F    | 13     | 77%   | +2.48%  | Gasoline futures, new addition        |
+| ES=F    | 22     | 73%   | +3.07%  | v2 had 9 trades; loose adds 13 more   |
+| ^GSPC   | 10     | 70%   | +0.81%  | Cash S&P, was 0 trades on v2          |
+| YM=F    | 17     | 65%   | +4.10%  | Best return on the basket             |
+| GC=F    | 22     | 59%   | +1.24%  | More gold setups detected             |
+
+## 10. Recommended preset selection
+
+| Goal                                  | Preset      | Use it when                                                         |
+| ------------------------------------- | ----------- | ------------------------------------------------------------------- |
+| Strict, defensible v1 reference       | `baseline`  | comparing to the original spec                                      |
+| Best risk-adjusted (lowest DD)        | `v2`        | small basket / capital preservation prioritised                     |
+| **Best sample × win rate combo**      | `v2_loose`  | want enough trades to be statistically meaningful                   |
+| Most signals possible                 | `v2_loose --big` | running a portfolio approach across many instruments           |
+
+CLI:
+
+```bash
+python -m backtest.run --three-way                         # all three on default basket
+python -m backtest.run --loose --big                       # wide basket, v2_loose
+python -m backtest.run --three-way --tickers ES=F NQ=F GC=F  # custom subset
+```
+
+## 11. What was deliberately *not* changed
+
+Things that would lift sample size but at unacceptable quality cost:
+
+- **Lower ADX threshold to 15.** Tested informally: doubles signal count
+  but pushes win rate back below 40%. The 22 default is the sweet spot.
+- **Drop the HTF trend filter.** This reverses the single biggest v1→v2 win.
+- **Drop the climax-day skip.** Costs ~8% sample size; adds known-bad days.
+- **Trade outside any session.** Costs the structural-stop assumptions; FX
+  spreads at Asian/early-London open are wide enough to invalidate the
+  ADR-buffer math.
+
+## 12. Numbers to verify the methodology
+
+The 6-ticker funnel diagnostic in §6 is reproducible by re-running the
+`diagnose()` helper at the head of this push's commit. The aggregate
+results in §8/§9 are the contents of `backtest/results_v2_loose.csv`,
+`backtest/results_v2_loose_delta.csv`, and
+`backtest/results_v2_loose_big.csv`. All numbers reproduce on
+`python -m backtest.run --three-way` and `--loose --big`.

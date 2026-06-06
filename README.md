@@ -54,33 +54,63 @@ them.** Every feature is toggleable; defaults are on.
 | Extended session (London + NY) | (use the `nySess` input) | `extended_session`  | False   |
 | Daily-bar swing variant for long-history runs | (Pine: change chart TF to D) | `daily_mode`        | False   |
 
+### Tier 4 — sample-size broadeners (v2_loose preset)
+
+Targeted at the two filter stages that consume 97% of signals (rectangle
++ pullback at -83% drop, trigger candle at -82% drop). Default off so v2
+numbers stay stable; opt in via `--loose` or `--three-way`. See
+[research/improvements.md §6-12](research/improvements.md) for the funnel
+diagnostic that justifies these.
+
+| Feature              | Pine input                          | Python field         | Default |
+| -------------------- | ----------------------------------- | -------------------- | :-----: |
+| Loose pattern (drop rectangle req.) | `Loose pattern (drop rectangle req.)` | `loose_pattern`   | False   |
+| Prior-week mid + H/L value zones | `Add prior-week mid + H/L as value zones` | `use_pwm_zone` | False   |
+| 2-bar momentum trigger | `2-bar momentum trigger`          | `use_momentum_trig`  | False   |
+| NR4 expansion trigger | `NR4 expansion trigger`            | `use_nr_expansion`   | False   |
+| Pin-bar wick threshold (0.6 → 0.5 in loose) | `Pin-bar wick ratio` | `pin_wick_ratio` | 0.6 (0.5 in loose) |
+
 ---
 
-## Apples-to-apples backtest: v1 vs v2
+## Apples-to-apples backtest: v1 vs v2 vs v2_loose
 
 Same 720-day 1h window, same 21-instrument basket, same risk per trade.
 
 ```
-[baseline] aggregate over 21 instruments:
-  total trades       : 250
-  weighted win rate  : 29.6%
-  mean total return  : -0.99%
-  worst max DD       : -8.62%
-  positive instruments: 6/21
-
-[v2] aggregate over 21 instruments:
-  total trades       : 156
-  weighted win rate  : 47.4%
-  mean total return  : -0.20%
-  worst max DD       : -3.96%
-  positive instruments: 7/21
-
-  mean return delta  : +0.79%
-  median return delta: +0.15%
-  improved tickers   : 12/21
+                      trades   win    return    DD     positive
+baseline (v1)           250   29.6%  -0.99%   -8.62%   6/21
+v2                      156   47.4%  -0.20%   -3.96%   7/21
+v2_loose                359   51.3%  -0.56%   -6.22%   9/21
 ```
 
-### Standout improvements
+### v2_loose vs v2 — the sample-size answer
+
+- **Trades: +130%** (156 → 359)
+- **Win rate: +3.9 pp** (47.4% → 51.3%) — the new triggers are *higher* quality
+- Positive instruments: 7 → **9 of 21**
+- Mean return: -0.20% → -0.56% (slightly worse)
+- Worst DD: -3.96% → -6.22% (the loose pattern admits more setups, some marginal)
+
+### Wider basket: v2_loose on 32 instruments
+
+Adding JPY crosses, NZDUSD, EURGBP, energies (CL, NG, RB) and altcoins:
+
+```
+v2_loose / 32 instruments   587 trades   48.7% win   -0.68% mean
+```
+
+**~3.8x the v2 trade count** with a 1.3pp win-rate dip. Standouts on the
+wide basket:
+
+| ticker  | trades | win   | return | note                              |
+| ------- | -----: | ----: | -----: | --------------------------------- |
+| ^DJI    | 14     | 93%   | +2.15% | Cash index, was 0 trades on v2    |
+| RB=F    | 13     | 77%   | +2.48% | Gasoline futures (new)            |
+| ES=F    | 22     | 73%   | +3.07% | v2 had 9; loose finds 13 more     |
+| YM=F    | 17     | 65%   | +4.10% | Best return on the basket         |
+| GC=F    | 22     | 59%   | +1.24% | More gold setups detected         |
+
+### Standout v1→v2 improvements (unchanged)
 
 | ticker   | trades (b/v2) | win % (b/v2)  | return (b/v2)        | PF (b/v2)   |
 | -------- | ------------- | ------------- | -------------------- | ----------- |
@@ -208,8 +238,14 @@ python -m backtest.run
 # v1 baseline (Tier 1+2 features off)
 python -m backtest.run --baseline
 
-# v1 vs v2 side-by-side with delta table
-python -m backtest.run --vs-baseline
+# v2_loose (Tier 4 sample-size broadeners on)
+python -m backtest.run --loose
+
+# Three-way comparison: baseline + v2 + v2_loose with delta tables
+python -m backtest.run --three-way
+
+# Wide 32-instrument basket (FX crosses, energies, altcoins)
+python -m backtest.run --loose --big
 
 # 20-year daily swing variant, vs-baseline
 python -m backtest.run --daily --years 20 --vs-baseline --no-ny
@@ -218,7 +254,7 @@ python -m backtest.run --daily --years 20 --vs-baseline --no-ny
 python -m backtest.run --tickers EURUSD=X GC=F BTC-USD
 
 # custom risk per trade and CSV output
-python -m backtest.run --vs-baseline --risk-pct 0.25 --out-csv results.csv
+python -m backtest.run --three-way --risk-pct 0.25 --out-csv results.csv
 ```
 
 ### Walk-forward optimizer
